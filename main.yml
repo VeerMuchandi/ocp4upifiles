@@ -1,0 +1,153 @@
+---
+# Setup OCP4 Helper Node
+
+- hosts: all
+  tasks:
+
+  - name: Install needed packages
+    yum:
+      name:
+        - bind
+        - bind-utils
+        - haproxy
+        - httpd
+        - vim
+        - bash-completion
+        - libselinux-python
+        - syslinux
+      state: present
+
+  - name: Write out named file
+    template:
+      src: ../templates/named.conf.j2
+      dest: /etc/named.conf
+
+  - name: Set zone serial number
+    command: "date +%Y%m%d00"
+    register: dymanicserialnumber
+
+  - name: Setting serial number as a fact
+    set_fact:
+      serialnumber: "{{ dymanicserialnumber.stdout }}"
+  
+  - name: Write out "{{ dns.domain }}" zone file
+    template:
+      src: ../templates/zonefile.j2
+      dest: /var/named/zonefile.db
+  
+  - name: Write out reverse zone file
+    template:
+      src: ../templates/reverse.j2
+      dest: /var/named/reverse.db
+  
+  - name: Write out haproxy config file
+    template:
+      src: ../templates/haproxy.cfg.j2
+      dest: /etc/haproxy/haproxy.cfg
+
+  - name: Copy httpd conf file
+    copy:
+      src: ../files/httpd.conf
+      dest: /etc/httpd/conf/httpd.conf
+
+  - name: Create apache directories for installing
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: 0755
+    with_items:
+      - /var/www/html/install
+      - /var/www/html/ignition
+
+  - name: Get OCP4 installer Bios
+    get_url:
+      url: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.1/latest/rhcos-4.1.2-x86_64-metal-bios.raw.gz
+      dest: /var/www/html/install/bios.raw.gz
+      mode: 0555
+
+  - name: Open up firewall ports
+    firewalld:
+      permanent: yes
+      immediate: yes
+      state: enabled
+      port: "{{ item }}"
+    with_items:
+      - 67/udp
+      - 53/tcp
+      - 53/udp
+      - 443/tcp
+      - 80/tcp
+      - 8080/tcp
+      - 6443/tcp
+      - 6443/udp
+      - 22623/tcp
+      - 22623/udp
+      - 9000/tcp
+      - 69/udp
+
+  - name: Best effort SELinux repair - DNS
+    shell: "restorecon -vR /var/named || true"
+
+  - name: Best effort SELinux repair - Apache
+    shell: "restorecon -vR /var/www/html || true"
+
+  - name: SEBool allow haproxy connect any port
+    seboolean:
+      name: haproxy_connect_any
+      state: yes
+      persistent: yes
+
+  - name: Starting services
+    service:
+      name: "{{ item }}"
+      enabled: yes
+      state: started
+    with_items:
+      - named
+      - haproxy
+      - httpd
+
+  - name: Set the local resolv.conf file
+    template:
+      src: ../templates/resolv.conf.j2
+      dest: /etc/resolv.conf
+
+  - name: Copy info script over
+    template:
+      src: ../templates/checker.sh.j2
+      dest: /usr/local/bin/checker.sh
+      owner: root
+      group: root
+      mode: 0555
+
+  - name: Dowloading OC clients 
+    get_url:
+      url: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux-4.1.2.tar.gz
+      dest: /usr/local/src/openshift-client-linux-4.1.2.tar.gz
+
+  - name: Dowloading OpenShift Installer
+    get_url:
+      url: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux-4.1.2.tar.gz
+      dest: /usr/local/src/openshift-install-linux-4.1.2.tar.gz
+
+  - name: Unarchiving OC clients
+    unarchive:
+      src: /usr/local/src/openshift-client-linux-4.1.2.tar.gz
+      dest: /usr/local/bin
+      remote_src: yes
+
+  - name: Unarchiving OpenShift Installer
+    unarchive:
+      src: /usr/local/src/openshift-install-linux-4.1.2.tar.gz
+      dest: /usr/local/bin
+      remote_src: yes
+
+  - name: Removing files that are not needed
+    file:
+      path: /usr/local/bin/README.md
+      state: absent
+
+  - name:  Information about this install
+    debug:
+      msg:
+        - "Please run /usr/local/bin/checker.sh for information"
